@@ -1,5 +1,55 @@
 # Guiding RMS Analysis Tool
 
+## Installation on a new machine
+
+> **Complete step-by-step instructions — nothing is assumed beyond having Python 3.10+ available.**
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/eartigau/nirps_imaging.git
+cd nirps_imaging
+```
+
+### 2. Create and activate a virtual environment (recommended)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate        # macOS / Linux
+# On Windows: .venv\Scripts\activate
+```
+
+### 3. Install the Python dependencies
+
+```bash
+pip install astropy numpy scipy matplotlib pyyaml
+```
+
+### 4. Configure your local data folders
+
+Copy `guiding_config.yaml` and add a block for your OS username:
+
+```yaml
+user:
+  your_username:            # replace with the output of: python3 -c "import getpass; print(getpass.getuser())"
+    data_folder: '/path/to/your/input/fits/files'
+    output_folder: '/path/to/where/you/want/outputs'
+```
+
+### 5. Verify the installation
+
+```bash
+python get_props_guiding.py --help
+```
+
+You should see the full usage message. To run a quick end-to-end test:
+
+```bash
+python get_props_guiding.py inputs/NIRPS_2025-07-28T23_07_40_654.fits --output outputs/
+```
+
+---
+
 Analyzes on-sky guiding frames stored in the `GUIDING` extension of NIRPS FITS files.
 For each exposure it:
 
