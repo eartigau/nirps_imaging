@@ -31,10 +31,17 @@ Copy `guiding_config.yaml` and add a block for your OS username:
 
 ```yaml
 user:
-  your_username:            # replace with the output of: python3 -c "import getpass; print(getpass.getuser())"
+  your_username:            # exact match (replace with: python3 -c "import getpass; print(getpass.getuser())")
     data_folder: '/path/to/your/input/fits/files'
     output_folder: '/path/to/where/you/want/outputs'
+
+  # Wildcard patterns (fnmatch syntax) are also supported — useful for shared configs:
+  # 'eartig*':
+  #   data_folder: '/Users/eartigau/data/nirps'
+  #   output_folder: '/Users/eartigau/data/outputs'
 ```
+
+Lookup order: **exact username** → **first matching wildcard** → **`default`**.
 
 ### 5. Verify the installation
 

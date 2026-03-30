@@ -26,6 +26,7 @@ import glob
 import time
 import yaml
 import getpass
+import fnmatch
 
 # ---------------------------------------------------------------------------
 # Load configuration from YAML (falls back to built-in defaults if not found)
@@ -77,14 +78,28 @@ def load_config(config_path=_CONFIG_PATH):
         current_user = getpass.getuser()
         selected_user_cfg = users_cfg.get(current_user)
         if selected_user_cfg is None:
+            # No exact match — try wildcard patterns (skip reserved keys)
+            reserved = {'default'}
+            matched_key = None
+            for key in users_cfg:
+                if key not in reserved and fnmatch.fnmatch(current_user, key):
+                    matched_key = key
+                    break
+            if matched_key is not None:
+                print(
+                    f"Info: user '{current_user}' matched wildcard pattern '{matched_key}' "
+                    "in config 'user' section."
+                )
+                selected_user_cfg = users_cfg[matched_key]
+            else:
+                print(
+                    f"Warning: user '{current_user}' not found in config 'user' section. "
+                    "Falling back to user.default."
+                )
+                selected_user_cfg = {}
+        if not isinstance(selected_user_cfg, dict):
             print(
-                f"Warning: user '{current_user}' not found in config 'user' section. "
-                "Falling back to user.default."
-            )
-            selected_user_cfg = {}
-        elif not isinstance(selected_user_cfg, dict):
-            print(
-                f"Warning: user.{current_user} must be a mapping. "
+                f"Warning: matched user entry for '{current_user}' must be a mapping. "
                 "Falling back to user.default."
             )
             selected_user_cfg = {}
@@ -93,6 +108,7 @@ def load_config(config_path=_CONFIG_PATH):
         merged_user_cfg.update(selected_user_cfg)
         cfg['data_folder'] = merged_user_cfg.get('data_folder', '')
         cfg['output_folder'] = merged_user_cfg.get('output_folder', '')
+        cfg['wildcard'] = merged_user_cfg.get('wildcard', '')
     else:
         print(f"Warning: Config file not found at {config_path}. Using built-in defaults.")
     return cfg
@@ -726,11 +742,19 @@ Examples:
         output_folder = os.path.expanduser(output_folder)
 
     # ---- Expand file patterns relative to base ----------------------------
-    if not args.files:
-        parser.error('Provide at least one FITS file or glob pattern.')
+    # Fall back to the wildcard from config when no files are given on the CLI.
+    patterns = args.files
+    if not patterns:
+        config_wildcard = CONFIG.get('wildcard') or ''
+        if config_wildcard:
+            print(f"No files specified; using wildcard from config: '{config_wildcard}'")
+            patterns = [config_wildcard]
+        else:
+            parser.error('Provide at least one FITS file or glob pattern '
+                         '(or set wildcard in guiding_config.yaml).')
 
     filepaths = []
-    for pattern in args.files:
+    for pattern in patterns:
         if base:
             full_pattern = os.path.join(base, pattern)
         else:

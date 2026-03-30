@@ -44,12 +44,26 @@ user:
   default:
     # Base directory where input FITS files are searched (used when file patterns are given).
     # An empty string means the current working directory.
-    data_folder: ''
+    data_folder: '/cosmos99/nirps/raw-data/nirps_he/'
     # Directory where *_guiding_analysis.fits output files are written.
     # An empty string means the output lands next to each input file.
-    output_folder: ''
+    output_folder: '/data/spirou/guiding_boxes/'
+    # wild card
+    wildcard: '2024-06-??/NIRPS*.fits'
 
-  # Example user entry:
+  eartigau:
+    data_folder: '/Users/eartigau/GitHubProjects/nirps_imaging/inputs'
+    output_folder: '/Users/eartigau/GitHubProjects/nirps_imaging/outputs'
+    wildcard: 'NIRPS*.fits'
+
+  # Exact username entry (takes priority over wildcards):
   # your_username:
   #   data_folder: '/path/to/inputs'
   #   output_folder: '/path/to/outputs'
+
+  # Wildcard patterns are supported (fnmatch syntax, e.g. * matches any string):
+  # 'eartig*':
+  #   data_folder: '/Users/eartigau/data/nirps'
+  #   output_folder: '/Users/eartigau/data/nirps_outputs'
+  #
+  # Lookup order: exact username > first matching wildcard > default
