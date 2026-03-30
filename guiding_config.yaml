@@ -51,6 +51,16 @@ user:
     # wild card
     wildcard: '2024-06-??/NIRPS*.fits'
 
+  spirou:
+    # Base directory where input FITS files are searched (used when file patterns are given).
+    # An empty string means the current working directory.
+    data_folder: '/cosmos99/nirps/raw-data/nirps_he/'
+    # Directory where *_guiding_analysis.fits output files are written.
+    # An empty string means the output lands next to each input file.
+    output_folder: '/data/spirou/guiding_boxes/'
+    # wild card
+    wildcard: '2024-06-??/NIRPS*.fits'
+    
   eartigau:
     data_folder: '/Users/eartigau/GitHubProjects/nirps_imaging/inputs'
     output_folder: '/Users/eartigau/GitHubProjects/nirps_imaging/outputs'

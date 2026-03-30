@@ -201,7 +201,8 @@ def remove_hatch(image):
                 image[row, :] -= robust_mean(row_data)
 
         mask = np.ones_like(image, dtype=float)
-        mask[image > CONFIG['hatch_remove_sigma'] * np.nanmedian(image)] = np.nan
+        threshold = CONFIG['hatch_remove_sigma'] * np.nanmedian(image)
+        mask[np.isfinite(image) & (image > threshold)] = np.nan
 
     return image
 
@@ -774,13 +775,35 @@ Examples:
     save_figures_basename = 'documentation' if args.documentation else None
     force = args.force or args.documentation
 
+    # ---- Pre-run summary --------------------------------------------------
+    n_total = len(filepaths)
+    print('=' * 60)
+    print('  NIRPS Guiding Analysis')
+    print('=' * 60)
+    print(f'  Files to process : {n_total}')
+    print(f'  Base directory   : {base or "(current directory)"}')
+    print(f'  Output directory : {output_folder or "(next to each input file)"}')
+    print(f'  Force reprocess  : {force}')
+    print(f'  Show plots       : {args.doplot}')
+    print('=' * 60)
+
     # ---- Process each file ------------------------------------------------
+    n_done = 0
     for filepath in filepaths:
+        n_done += 1
+        n_todo = n_total - n_done
+
+        # Clear screen and print per-file progress header
+        print('\033[2J\033[H', end='')
+        print('=' * 60)
+        print(f'  File {n_done}/{n_total}  |  done: {n_done - 1}  |  to do: {n_todo + 1}')
+        print(f'  {os.path.basename(filepath)}')
+        print('=' * 60)
+
         if not os.path.exists(filepath):
-            print(f"Error: File not found: {filepath}")
+            print(f'Error: File not found: {filepath}')
             continue
 
-        print(f"\nProcessing: {filepath}")
         start_time = time.time()
         analyze_guiding_image(
             filepath,
@@ -791,6 +814,10 @@ Examples:
             save_figures_basename=save_figures_basename,
         )
         elapsed_time = time.time() - start_time
-        print(f"Completed in {elapsed_time:.2f} seconds")
+        print(f'Completed in {elapsed_time:.2f} seconds')
+
+    print('=' * 60)
+    print(f'  All {n_total} file(s) processed.')
+    print('=' * 60)
 
 
