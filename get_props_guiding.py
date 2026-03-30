@@ -25,6 +25,7 @@ import os
 import glob
 import time
 import yaml
+import getpass
 
 # ---------------------------------------------------------------------------
 # Load configuration from YAML (falls back to built-in defaults if not found)
@@ -44,18 +45,54 @@ _DEFAULTS = {
     'wcs_cdelt': 0.1,
     'wcs_rotation_angle': 45.0,
     'plot_residual_scale': 0.1,
-    # Folder defaults (empty string = current working directory / same as input)
-    'data_folder': '',
-    'output_folder': '',
 }
 
 def load_config(config_path=_CONFIG_PATH):
-    """Load YAML config, merging with defaults for any missing keys."""
+    """Load YAML config, merging defaults and resolving user-specific folders."""
     cfg = dict(_DEFAULTS)
+    cfg['data_folder'] = ''
+    cfg['output_folder'] = ''
+
     if os.path.exists(config_path):
         with open(config_path, 'r') as fh:
             loaded = yaml.safe_load(fh) or {}
-        cfg.update(loaded)
+
+        # Apply non-folder keys directly; folder paths are resolved from user map.
+        for key, value in loaded.items():
+            if key != 'user':
+                cfg[key] = value
+
+        users_cfg = loaded.get('user', {})
+        if not isinstance(users_cfg, dict):
+            print("Warning: 'user' section must be a mapping. Falling back to empty folder defaults.")
+            users_cfg = {}
+
+        default_user_cfg = users_cfg.get('default', {})
+        if default_user_cfg is None:
+            default_user_cfg = {}
+        if not isinstance(default_user_cfg, dict):
+            print("Warning: user.default must be a mapping. Ignoring it.")
+            default_user_cfg = {}
+
+        current_user = getpass.getuser()
+        selected_user_cfg = users_cfg.get(current_user)
+        if selected_user_cfg is None:
+            print(
+                f"Warning: user '{current_user}' not found in config 'user' section. "
+                "Falling back to user.default."
+            )
+            selected_user_cfg = {}
+        elif not isinstance(selected_user_cfg, dict):
+            print(
+                f"Warning: user.{current_user} must be a mapping. "
+                "Falling back to user.default."
+            )
+            selected_user_cfg = {}
+
+        merged_user_cfg = dict(default_user_cfg)
+        merged_user_cfg.update(selected_user_cfg)
+        cfg['data_folder'] = merged_user_cfg.get('data_folder', '')
+        cfg['output_folder'] = merged_user_cfg.get('output_folder', '')
     else:
         print(f"Warning: Config file not found at {config_path}. Using built-in defaults.")
     return cfg
@@ -655,11 +692,13 @@ Examples:
     parser.add_argument(
         '--base', type=str, default=None,
         help='Base directory prepended to every file / pattern argument. '
-             'Falls back to data_folder in guiding_config.yaml.')
+             'Falls back to user.<current_user>.data_folder in guiding_config.yaml '
+             '(or user.default.data_folder).')
     parser.add_argument(
         '--output', type=str, default=None,
         help='Folder where *_guiding_analysis.fits products are written. '
-             'Falls back to output_folder in guiding_config.yaml; '
+             'Falls back to user.<current_user>.output_folder in guiding_config.yaml '
+             '(or user.default.output_folder); '
              'if that is also empty, results land next to the input files.')
     parser.add_argument('--doplot', action='store_true', default=False,
                         help='Display diagnostic plots interactively.')

@@ -132,7 +132,25 @@ wcs_rotation_angle: 45.0
 
 # Colour scale of residual image (fraction of peak flux)
 plot_residual_scale: 0.1
+
+# User-specific folders (selected from current OS username)
+user:
+   default:
+      data_folder: ''
+      output_folder: ''
+   # your_username:
+   #   data_folder: '/path/to/inputs'
+   #   output_folder: '/path/to/outputs'
 ```
+
+Folder resolution order:
+1. CLI argument (`--base` / `--output`)
+2. `user.<current_user>` in `guiding_config.yaml`
+3. `user.default` in `guiding_config.yaml`
+4. Built-in empty default (`''`)
+
+If the current OS user is not listed under `user`, the script prints a warning
+and uses `user.default` for folder paths.
 
 If the file is absent, built-in defaults (identical to the values above) are used
 and a warning is printed.

@@ -37,10 +37,19 @@ wcs_rotation_angle: 45.0
 # Fraction of peak flux used for residual image vmin/vmax
 plot_residual_scale: 0.1
 
-# --- Folders ---
-# Base directory where input FITS files are searched (used when file patterns are given).
-# An empty string means the current working directory.
-data_folder: ''
-# Directory where *_guiding_analysis.fits output files are written.
-# An empty string means the output lands next to each input file.
-output_folder: ''
+# --- User-specific folders ---
+# Folder settings are selected by current OS username.
+# If the username is not present, user.default is used and a warning is printed.
+user:
+  default:
+    # Base directory where input FITS files are searched (used when file patterns are given).
+    # An empty string means the current working directory.
+    data_folder: ''
+    # Directory where *_guiding_analysis.fits output files are written.
+    # An empty string means the output lands next to each input file.
+    output_folder: ''
+
+  # Example user entry:
+  # your_username:
+  #   data_folder: '/path/to/inputs'
+  #   output_folder: '/path/to/outputs'
