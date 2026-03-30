@@ -117,6 +117,21 @@ def load_config(config_path=_CONFIG_PATH):
 
 CONFIG = load_config()
 
+def smart_fmt(value):
+    """Format floats with <=2 decimals when |x|>1, otherwise <=5 decimals."""
+
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    if not np.isfinite(v):
+        return str(v)
+
+    if abs(v) > 1:
+        return f"{v:.2f}".rstrip('0').rstrip('.')
+    return f"{v:.5f}".rstrip('0').rstrip('.')
+
 def robust_mean(x):
     """Compute robust mean resistant to outliers."""
 
@@ -583,14 +598,17 @@ def analyze_guiding_image(
         plt.show()
     plt.close(fig)
     
-    print(f"Analysis complete. Optimal center: ({xcen_opt:.2f}, {ycen_opt:.2f})")
+    print(
+        "Analysis complete. Optimal center: "
+        f"({smart_fmt(xcen_opt)}, {smart_fmt(ycen_opt)})"
+    )
 
-    print('Flux in ring : ', norm)
-    print('RMS residual:', rms_residual)
+    print(f"Flux in ring : {smart_fmt(norm)}")
+    print(f"RMS residual: {smart_fmt(rms_residual)}")
     peak_leak = harmonic_fit['peak_value']
-    print('Peak flare:', peak_leak)
+    print(f"Peak flare: {smart_fmt(peak_leak)}")
     peak_angle = harmonic_fit['peak_angle_deg']
-    print('Peak angle:', peak_angle)
+    print(f"Peak angle: {smart_fmt(peak_angle)}")
 
     # Create MEF with analysis results
     # Copy header from input file and add new analysis parameters
@@ -807,7 +825,7 @@ Examples:
             avg = sum(elapsed_times) / len(elapsed_times)
             eta_sec = avg * (n_remaining + 1)
             eta_str = f'{int(eta_sec // 60)}m {int(eta_sec % 60)}s'
-            timing_line = f'  Avg per file: {avg:.1f}s  |  Est. time left: {eta_str}'
+            timing_line = f'  Avg per file: {smart_fmt(avg)}s  |  Est. time left: {eta_str}'
         else:
             timing_line = ''
 
@@ -847,7 +865,7 @@ Examples:
         elapsed_times.append(elapsed_time)
 
         captured = buf.getvalue().rstrip('\n').split('\n') if buf.getvalue() else []
-        pending_display = file_header + captured + [f'Completed in {elapsed_time:.2f} seconds']
+        pending_display = file_header + captured + [f'Completed in {smart_fmt(elapsed_time)} seconds']
 
     # Show the last file's output after the loop
     print('\033[2J\033[H', end='')
