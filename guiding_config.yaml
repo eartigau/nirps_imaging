@@ -1,0 +1,46 @@
+# Guiding RMS Analysis Configuration
+# All hard-coded parameters for get_props_guiding.py
+
+# --- Radial profiling ---
+# Primary radial analysis radius in pixels
+rad_rms: 50
+# Pixels to trim from the maximum possible radius when computing the full radial profile
+rad_rms_trim: 5
+# Pixel step size for bins at radius <= rad_bin_inner_max
+rad_bin_step_inner: 0.5
+# Radius (pixels) below which the inner bin step is used
+rad_bin_inner_max: 5
+# Fractional step factor for bins beyond rad_bin_inner_max (next_bin = r * factor)
+rad_bin_step_outer_factor: 0.1
+
+# --- Angular profiling ---
+# Size of each angular sector in degrees
+angular_bin_size: 30
+# Number of cosine harmonics used to fit the azimuthal residual profile
+angular_fit_harmonics: 5
+# Sampling step in degrees used to locate the maximum of the fitted profile
+angular_fit_step_deg: 0.1
+
+# --- Robust statistics ---
+# Sigma threshold for robust_mean (reject pixels beyond N * MAD)
+robust_mean_sigma: 5
+# Threshold for masking bright pixels in remove_hatch (N * nanmedian)
+hatch_remove_sigma: 3
+
+# --- WCS ---
+# Pixel scale in degrees (absolute value; RA axis is negated for standard orientation)
+wcs_cdelt: 0.1
+# WCS rotation angle in degrees
+wcs_rotation_angle: 45.0
+
+# --- Plotting ---
+# Fraction of peak flux used for residual image vmin/vmax
+plot_residual_scale: 0.1
+
+# --- Folders ---
+# Base directory where input FITS files are searched (used when file patterns are given).
+# An empty string means the current working directory.
+data_folder: ''
+# Directory where *_guiding_analysis.fits output files are written.
+# An empty string means the output lands next to each input file.
+output_folder: ''

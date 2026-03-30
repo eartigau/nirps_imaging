@@ -1,0 +1,722 @@
+"""
+Guiding RMS Analysis Tool
+=====================
+
+Analyzes guiding image data from FITS files to extract RMS properties and radial profiles.
+Extracts the 'GUIDING' extension, computes the optimal center position, generates radial 
+and angular profiles, and visualizes residuals.
+
+Usage:
+    python get_props_guiding.py <filepath>
+
+Author: Étienne Artigau
+Date: 2026-03-27
+"""
+
+from astropy.io import fits
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize
+from scipy.interpolate import InterpolatedUnivariateSpline as ius
+from astropy.wcs import WCS
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+import os
+import glob
+import time
+import yaml
+
+# ---------------------------------------------------------------------------
+# Load configuration from YAML (falls back to built-in defaults if not found)
+# ---------------------------------------------------------------------------
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'guiding_config.yaml')
+_DEFAULTS = {
+    'rad_rms': 50,
+    'rad_rms_trim': 5,
+    'rad_bin_step_inner': 0.5,
+    'rad_bin_inner_max': 5,
+    'rad_bin_step_outer_factor': 0.1,
+    'angular_bin_size': 30,
+    'angular_fit_harmonics': 5,
+    'angular_fit_step_deg': 0.1,
+    'robust_mean_sigma': 5,
+    'hatch_remove_sigma': 3,
+    'wcs_cdelt': 0.1,
+    'wcs_rotation_angle': 45.0,
+    'plot_residual_scale': 0.1,
+    # Folder defaults (empty string = current working directory / same as input)
+    'data_folder': '',
+    'output_folder': '',
+}
+
+def load_config(config_path=_CONFIG_PATH):
+    """Load YAML config, merging with defaults for any missing keys."""
+    cfg = dict(_DEFAULTS)
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as fh:
+            loaded = yaml.safe_load(fh) or {}
+        cfg.update(loaded)
+    else:
+        print(f"Warning: Config file not found at {config_path}. Using built-in defaults.")
+    return cfg
+
+CONFIG = load_config()
+
+def robust_mean(x):
+    """Compute robust mean resistant to outliers."""
+
+    values = np.asarray(x, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return 0.0
+
+    median = np.nanmedian(values)
+    mad = np.nanmedian(np.abs(values - median))
+
+    if not np.isfinite(mad) or mad == 0:
+        return float(median)
+
+    inliers = np.abs(values - median) < CONFIG['robust_mean_sigma'] * mad
+    if not np.any(inliers):
+        return float(median)
+
+    return float(np.nanmean(values[inliers]))
+
+def filter_profile_points(rad_profile, profile):
+    """Keep only finite radial-profile points for interpolation."""
+
+    keep = np.isfinite(rad_profile) & np.isfinite(profile)
+    return rad_profile[keep], profile[keep]
+
+def fit_angular_harmonics(theta_deg, values, max_harmonics=5, step_deg=0.1):
+    """Fit a Fourier harmonic series (cos+sin) and sample it finely."""
+
+    theta_deg = np.asarray(theta_deg, dtype=float)
+    values = np.asarray(values, dtype=float)
+    keep = np.isfinite(theta_deg) & np.isfinite(values)
+    theta_deg = theta_deg[keep]
+    values = values[keep]
+
+    if theta_deg.size < 2:
+        return None
+
+    # Two parameters per harmonic (cos and sin) plus constant term.
+    # Keep the system overdetermined to avoid unstable fits.
+    n_harmonics = max(1, min(int(max_harmonics), (theta_deg.size - 1) // 2))
+    theta_rad = np.radians(theta_deg)
+    design = [np.ones_like(theta_rad)]
+    for order in range(1, n_harmonics + 1):
+        design.append(np.cos(order * theta_rad))
+        design.append(np.sin(order * theta_rad))
+    design = np.column_stack(design)
+
+    coeffs, _, _, _ = np.linalg.lstsq(design, values, rcond=None)
+
+    n_eval = max(360, int(np.ceil(360.0 / step_deg)))
+    theta_fine = np.linspace(0.0, 360.0, n_eval, endpoint=False)
+    theta_fine_rad = np.radians(theta_fine)
+    fit_values = np.full_like(theta_fine, coeffs[0], dtype=float)
+    coeff_idx = 1
+    for order in range(1, n_harmonics + 1):
+        fit_values += coeffs[coeff_idx] * np.cos(order * theta_fine_rad)
+        coeff_idx += 1
+        fit_values += coeffs[coeff_idx] * np.sin(order * theta_fine_rad)
+        coeff_idx += 1
+
+    peak_idx = int(np.nanargmax(fit_values))
+    return {
+        'theta_deg': theta_fine,
+        'fit_values': fit_values,
+        'peak_angle_deg': float(theta_fine[peak_idx]),
+        'peak_value': float(fit_values[peak_idx]),
+        'coeffs': coeffs,
+        'n_harmonics': n_harmonics,
+    }
+
+def remove_hatch(image):
+    mask = np.ones_like(image, dtype=float)
+
+
+    for ite in range(2):
+        for col in range(image.shape[1]):
+            col_data = image[:, col]+mask[:, col]
+            if np.any(~np.isnan(col_data)):
+                image[:, col] -= robust_mean(col_data)
+        for row in range(image.shape[0]):
+            row_data = image[row, :]+mask[row, :]
+            if np.any(~np.isnan(row_data)):
+                image[row, :] -= robust_mean(row_data)
+
+        mask = np.ones_like(image, dtype=float)
+        mask[image > CONFIG['hatch_remove_sigma'] * np.nanmedian(image)] = np.nan
+
+    return image
+
+def analyze_guiding_image(filepath, doplot=False, output_folder=None, force=False, save_figures=None):
+    """
+    Analyze guiding image data from a FITS file.
+    
+    Parameters
+    ----------
+    filepath : str
+        Path to the FITS file containing guiding image data
+    doplot : bool, optional
+        If True, display matplotlib plots interactively. Default is False.
+    output_folder : str, optional
+        Folder to save output FITS file. If None, save in same directory as input file.
+    force : bool, optional
+        If True, reprocess even if the output FITS file already exists.
+    save_figures : str, optional
+        Folder to save PNG figures. If None, figures are not saved to disk.
+        
+    Returns
+    -------
+    None
+        Writes output FITS file; optionally displays or saves plots.
+        
+    Notes
+    -----
+    Gracefully skips processing if the 'GUIDING' extension is not found.
+    """
+    
+    # Determine output path
+    if output_folder is not None:
+        output_filename = os.path.basename(filepath).replace('.fits', '_guiding_analysis.fits')
+        output_path = os.path.join(output_folder, output_filename)
+    else:
+        output_path = filepath.replace('.fits', '_guiding_analysis.fits')
+    
+    # Skip if output file already exists (unless force=True)
+    if os.path.exists(output_path) and not force:
+        print(f"Output file already exists: {output_path}. Skipping (use --force to reprocess).")
+        return
+    
+    # Attempt to load the GUIDING extension from the FITS file
+    try:
+        guiding_image0 = fits.getdata(filepath, 'GUIDING').astype(float)
+        # Read header from primary HDU for RA/DEC
+        hdr = fits.getheader(filepath, 0)
+    except KeyError:
+        print(f"Warning: 'GUIDING' extension not found in {filepath}. Skipping analysis.")
+        return
+    except Exception as e:
+        print(f"Error reading file {filepath}: {e}")
+        return
+    
+    guiding_image = guiding_image0.copy()
+    
+
+    guiding_image = remove_hatch(guiding_image)
+
+    # Subtract median to center the data distribution
+    guiding_image -= np.nanmedian(guiding_image)
+    
+    # Get image dimensions
+    sz = guiding_image.shape
+    
+    # Create coordinate grids for the image (in pixels)
+    ypix, xpix = np.meshgrid(np.arange(sz[0]), np.arange(sz[1]), indexing='ij')
+    ypix, xpix = ypix.astype(float), xpix.astype(float)
+    
+    # Create mask for all valid pixels
+    mask = np.isfinite(guiding_image)
+    
+    # Compute initial center position using flux-weighted centroid
+    flux_sum = np.nansum(guiding_image[mask])
+    if flux_sum == 0 or not np.isfinite(flux_sum):
+        print(f"Warning: Could not determine a valid centroid for {filepath}. Skipping analysis.")
+        return
+
+    xcen = np.nansum(guiding_image[mask] * xpix[mask]) / flux_sum
+    ycen = np.nansum(guiding_image[mask] * ypix[mask]) / flux_sum
+
+    # rad_rms
+    rad_rms0 = CONFIG['rad_rms']
+        
+    def get_profile(xcen, ycen, rad_rms=50):
+        """
+        Compute 1D radial profile around a center position.
+        
+        Parameters
+        ----------
+        xcen : float
+            X-coordinate of the center
+        ycen : float
+            Y-coordinate of the center
+            
+        Returns
+        -------
+        rad_profile : ndarray
+            Radial bin centers
+        profile : ndarray
+            Median flux values in each radial bin
+        """
+        # Compute radial distance from center for all pixels (once)
+        rad = np.sqrt((xpix - xcen)**2 + (ypix - ycen)**2)
+        
+        # Build radial bins: inner step up to rad_bin_inner_max, then fractional step
+        rad_profile = [1.0]
+        while rad_profile[-1] < rad_rms:
+            if rad_profile[-1] <= CONFIG['rad_bin_inner_max']:
+                next_bin = CONFIG['rad_bin_step_inner']
+            else:
+                next_bin = rad_profile[-1] * CONFIG['rad_bin_step_outer_factor']
+            rad_profile.append(rad_profile[-1] + next_bin)
+        
+        rad_profile = np.array(rad_profile)
+        
+        # Extract flux using vectorized binning
+        profile = []
+        for i in range(len(rad_profile)):
+            r = rad_profile[i]
+            if i == 0:
+                step = rad_profile[1] - rad_profile[0]
+            elif i == len(rad_profile) - 1:
+                step = rad_profile[-1] - rad_profile[-2]
+            else:
+                step = rad_profile[i + 1] - rad_profile[i]
+            
+            keep = (rad >= (r - step / 2)) & (rad < (r + step / 2))
+            if np.any(keep):
+                profile.append(robust_mean(guiding_image[keep]))
+            else:
+                profile.append(np.nan)
+        
+        profile = np.array(profile)
+        
+        return rad_profile, profile
+    
+    def get2dprofile(xcen, ycen, rad_rms=50):
+        """
+        Create a 2D model profile using spline interpolation of radial profile.
+        
+        Parameters
+        ----------
+        xcen : float
+            X-coordinate of the center
+        ycen : float
+            Y-coordinate of the center
+            
+        Returns
+        -------
+        image2 : ndarray
+            2D model image with NaN outside the fit radius
+        """
+        # Compute radial distance from center
+        rad = np.sqrt((xpix - xcen)**2 + (ypix - ycen)**2)
+        
+        # Get 1D radial profile
+        rad_profile, profile = get_profile(xcen, ycen, rad_rms=rad_rms)
+        
+        rad_profile, profile = filter_profile_points(rad_profile, profile)
+        if rad_profile.size < 2:
+            return np.full_like(guiding_image, np.nan, dtype=float)
+
+        # Create linear spline interpolation (faster than cubic for this use case)
+        spl = ius(rad_profile, profile, k=1, ext=1)
+        
+        # Apply spline only to pixels within radius
+        keep = rad < rad_rms
+        image2 = np.full_like(guiding_image, np.nan, dtype=float)
+        image2[keep] = spl(rad[keep])
+        
+        return image2
+    
+    def rms2rad(xcen, ycen, rad_rms=50):
+        """
+        Compute normalized RMS of residuals between data and model.
+        
+        Parameters
+        ----------
+        xcen : float
+            X-coordinate of the center
+        ycen : float
+            Y-coordinate of the center
+            
+        Returns
+        -------
+        rms : float
+            Normalized RMS value
+        """
+        # Generate 2D model profile
+        image2 = get2dprofile(xcen, ycen, rad_rms=rad_rms)
+        
+        # Compute normalization factor
+        norm = np.nansum(image2)
+        
+        # Compute normalized RMS of residuals
+        if norm <= 0 or not np.isfinite(norm):
+            return np.inf
+
+        rms = np.nanstd(guiding_image - image2) / norm
+        
+        return rms
+    
+    # Minimize RMS to find the optimal center position
+    res = minimize(
+        lambda x: rms2rad(x[0], x[1], rad_rms=rad_rms0),
+        [xcen, ycen],
+        method='Nelder-Mead'
+    )
+    xcen_opt, ycen_opt = res.x
+    
+    rad_rms_trim = CONFIG['rad_rms_trim']
+    rad_rms_max = np.nanmax(np.sqrt((xpix - xcen_opt)**2 + (ypix - ycen_opt)**2))
+    
+    # Get radial profile at optimal center (computed once)
+    rad_profile, profile = get_profile(xcen_opt, ycen_opt, rad_rms=rad_rms0)
+    
+    # Plot 1: Radial profile
+    if doplot or save_figures:
+        fig_rad, ax_rad = plt.subplots(figsize=(8, 5))
+        ax_rad.plot(rad_profile, profile, marker='o')
+        ax_rad.set_xlabel('radius (pixels)')
+        ax_rad.set_ylabel('median flux')
+        ax_rad.set_title('Radial Profile')
+        if save_figures:
+            os.makedirs(save_figures, exist_ok=True)
+            stem = os.path.basename(filepath).replace('.fits', '')
+            fig_rad.savefig(os.path.join(save_figures, f'{stem}_radial_profile.png'), dpi=150, bbox_inches='tight')
+            print(f"Saved: {os.path.join(save_figures, stem + '_radial_profile.png')}")
+        if doplot:
+            plt.show()
+        plt.close(fig_rad)
+    
+    # Generate 2D model at optimal center
+    rad_profile_full, profile_full = get_profile(xcen_opt, ycen_opt, rad_rms=int(rad_rms_max - rad_rms_trim))
+    rad_profile_full, profile_full = filter_profile_points(rad_profile_full, profile_full)
+    if rad_profile_full.size < 2:
+        print(f"Warning: Insufficient valid annuli to build a spline model for {filepath}. Skipping analysis.")
+        return
+
+    spl = ius(rad_profile_full, profile_full, k=1, ext=1)
+    
+    # Compute radial distance and angular position arrays
+    rad = np.sqrt((xpix - xcen_opt)**2 + (ypix - ycen_opt)**2)
+    image2 = np.full_like(guiding_image, np.nan, dtype=float)
+    keep = rad < int(rad_rms_max - rad_rms_trim)
+    image2[keep] = spl(rad[keep])
+    
+    theta = np.arctan2(ypix - ycen_opt, xpix - xcen_opt) / np.pi * 180 + 180
+    
+    # Bin angle into angular sectors
+    ang_bin = CONFIG['angular_bin_size']
+    theta = ang_bin * (theta // ang_bin).astype(int)
+    
+    # Get unique angle bins and compute residual flux in each bin
+    theta_bin = np.unique(theta)
+    residual_flux_bin = np.array([
+        np.nansum((guiding_image - image2)[(theta == t) & (rad < rad_rms0)])
+        for t in theta_bin
+    ])  # rad_rms0 from config
+    theta_bin_center = (theta_bin + 0.5 * ang_bin) % 360.0
+    
+    # Extract region of interest around optimal center
+    guiding_image_box = guiding_image[
+        int(ycen_opt) - rad_rms0:int(ycen_opt) + rad_rms0 + 1,
+        int(xcen_opt) - rad_rms0:int(xcen_opt) + rad_rms0 + 1
+    ].copy()
+    image2_box = image2[
+        int(ycen_opt) - rad_rms0:int(ycen_opt) + rad_rms0 + 1,
+        int(xcen_opt) - rad_rms0:int(xcen_opt) + rad_rms0 + 1
+    ].copy()
+    
+    # Compute RMS residual before normalization
+    residual_unnorm = guiding_image_box - image2_box
+    rms_residual = np.nanstd(residual_unnorm)
+    
+    # Normalize to flux
+    norm = np.nansum(image2_box)
+    if norm > 0:
+        guiding_image_box /= norm
+        image2_box /= norm
+        residual_flux_bin /= norm
+    else:
+        print("Warning: Normalization value is zero or negative.")
+        return
+
+    harmonic_fit = fit_angular_harmonics(
+        theta_bin_center,
+        residual_flux_bin,
+        max_harmonics=CONFIG['angular_fit_harmonics'],
+        step_deg=CONFIG['angular_fit_step_deg'],
+    )
+    if harmonic_fit is None:
+        print(f"Warning: Could not fit angular harmonics for {filepath}. Skipping analysis.")
+        return
+    
+    # Plot 2: Angular residuals
+    if doplot or save_figures:
+        fig_ang, ax_ang = plt.subplots(figsize=(8, 5))
+        ax_ang.plot(theta_bin_center, residual_flux_bin, marker='o', linestyle='none', label='Binned residuals')
+        ax_ang.plot(
+            harmonic_fit['theta_deg'],
+            harmonic_fit['fit_values'],
+            linewidth=2,
+            label=f"Fourier fit ({harmonic_fit['n_harmonics']} harmonics)",
+        )
+        ax_ang.axvline(
+            harmonic_fit['peak_angle_deg'],
+            color='tab:red',
+            linestyle='--',
+            linewidth=1,
+            label=(
+                f"Peak: {harmonic_fit['peak_angle_deg']:.2f} deg, "
+                f"{harmonic_fit['peak_value']:.4f}"
+            ),
+        )
+        ax_ang.set_xlabel('theta (degrees)')
+        ax_ang.set_ylabel('residual flux (fraction of total)')
+        ax_ang.set_title('Angular Distribution of Residuals')
+        ax_ang.legend()
+        if save_figures:
+            os.makedirs(save_figures, exist_ok=True)
+            stem = os.path.basename(filepath).replace('.fits', '')
+            fig_ang.savefig(os.path.join(save_figures, f'{stem}_angular_residuals.png'), dpi=150, bbox_inches='tight')
+            print(f"Saved: {os.path.join(save_figures, stem + '_angular_residuals.png')}")
+        if doplot:
+            plt.show()
+        plt.close(fig_ang)
+    
+    # Plot 3: Data, model, and residuals comparison
+    fig, ax = plt.subplots(
+        1, 3,
+        figsize=(15, 5),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True
+    )
+    
+    vmax = np.nanmax(guiding_image_box)
+    res_scale = CONFIG['plot_residual_scale']
+
+    # Data image
+    ax[0].imshow(guiding_image_box, origin='lower', vmin=0, vmax=vmax)
+    ax[0].set_title('Original Data')
+    
+    # Model image
+    ax[1].imshow(image2_box, origin='lower', vmin=0, vmax=vmax)
+    ax[1].set_title('Radially-Symmetric Model')
+    
+    # Residual image
+    ax[2].imshow(
+        guiding_image_box - image2_box,
+        origin='lower',
+        vmin=-res_scale * vmax,
+        vmax=res_scale * vmax
+    )
+    ax[2].set_title('Residuals (data − model)')
+
+    if save_figures:
+        os.makedirs(save_figures, exist_ok=True)
+        stem = os.path.basename(filepath).replace('.fits', '')
+        fig.savefig(os.path.join(save_figures, f'{stem}_data_model_residual.png'), dpi=150, bbox_inches='tight')
+        print(f"Saved: {os.path.join(save_figures, stem + '_data_model_residual.png')}")
+    if doplot:
+        plt.show()
+    plt.close(fig)
+    
+    print(f"Analysis complete. Optimal center: ({xcen_opt:.2f}, {ycen_opt:.2f})")
+
+    print('Flux in ring : ', norm)
+    print('RMS residual:', rms_residual)
+    peak_leak = harmonic_fit['peak_value']
+    print('Peak flare:', peak_leak)
+    peak_angle = harmonic_fit['peak_angle_deg']
+    print('Peak angle:', peak_angle)
+
+    # Create MEF with analysis results
+    # Copy header from input file and add new analysis parameters
+    primary_hdu = fits.PrimaryHDU()
+    
+    # Copy all keywords from input file header (except structural keywords)
+    # Suppress FITS verification warnings for non-standard keyword names
+    structural_keywords = {'SIMPLE', 'BITPIX', 'NAXIS', 'EXTEND', 'PCOUNT', 'GCOUNT', 'XTENSION', 'EXTNAME', 'EXTVER', 'EXTLEVEL'}
+    
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=VerifyWarning)
+        for key in hdr:
+            if key not in structural_keywords:
+                try:
+                    primary_hdu.header[key] = hdr[key]
+                except:
+                    pass  # Skip keywords that can't be copied
+    
+    # Add analysis results
+    primary_hdu.header['FLUXRING'] = (norm,'Total flux in the ring model')
+    primary_hdu.header['RMSRESI'] = (rms_residual,'RMS of residuals before normalization')
+    primary_hdu.header['PEAKFLAR'] = (peak_leak,'Peak flare from harmonic fit, fraction of total flux')
+    primary_hdu.header['ANGLFLAR'] = (peak_angle,'Angle of harmonic-fit peak flare')
+    primary_hdu.header['XCEN'] = (xcen_opt,'Optimal X center')
+    primary_hdu.header['YCEN'] = (ycen_opt,'Optimal Y center')
+    
+    # Extract RA/DEC from input file header
+    try:
+        ra = hdr.get('RA', 0.0)
+        dec = hdr.get('DEC', 0.0)
+    except:
+        ra, dec = 0.0, 0.0
+        print("Warning: Could not extract RA/DEC from input header, using defaults.")
+    
+    # Create WCS for the images
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [xcen_opt + 1, ycen_opt + 1]  # FITS uses 1-based indexing
+    wcs.wcs.crval = [ra, dec]
+    cdelt = CONFIG['wcs_cdelt']
+    wcs.wcs.cdelt = [-cdelt, cdelt]  # Scale: negative RA for standard orientation
+    wcs.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+    rotation_angle = CONFIG['wcs_rotation_angle']  # degrees
+    cos_rot = np.cos(np.radians(rotation_angle))
+    sin_rot = np.sin(np.radians(rotation_angle))
+    wcs.wcs.cd = [[-cdelt * cos_rot,  cdelt * sin_rot],
+                  [-cdelt * sin_rot, -cdelt * cos_rot]]
+
+    diff = guiding_image - image2
+    diff =  remove_hatch(diff)
+
+
+    # Subtract column-wise robust mean efficiently
+    for col in range(diff.shape[1]):
+        col_data = diff[:, col]
+        if np.any(~np.isnan(col_data)):
+            diff[:, col] -= robust_mean(col_data)
+    
+    # Create image HDUs for guiding image and residual with WCS
+    hdu1 = fits.ImageHDU(guiding_image0, name='GUIDING')
+    hdu1.header.update(wcs.to_header())
+    
+    hdu2 = fits.ImageHDU(diff, name='RESIDUAL')
+    hdu2.header.update(wcs.to_header())
+    
+    # Create table HDU for radial profile
+    col1 = fits.Column(name='RADIUS', format='E', array=rad_profile)
+    col2 = fits.Column(name='FLUX', format='E', array=profile)
+    radial_table = fits.BinTableHDU.from_columns([col1, col2], name='RADIAL_PROFILE')
+    
+    # Create table HDU for angular profile
+    col3 = fits.Column(name='ANGLE', format='E', array=theta_bin_center)
+    col4 = fits.Column(name='RESIDUAL_FLUX', format='E', array=residual_flux_bin)
+    angular_table = fits.BinTableHDU.from_columns([col3, col4], name='ANGULAR_PROFILE')
+    
+    # Write MEF with warnings suppressed
+    hdul = fits.HDUList([primary_hdu, hdu1, hdu2, radial_table, angular_table])
+    
+    # Create output folder if needed
+    if output_folder is not None:
+        os.makedirs(output_folder, exist_ok=True)
+    
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=VerifyWarning)
+        hdul.writeto(output_path, overwrite=True)
+    
+    print(f"Output written to: {output_path}")
+
+
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Analyze NIRPS guiding frames and extract PSF / RMS properties.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # single file
+  python get_props_guiding.py NIRPS_2025-07-28T23_07_40_654.fits
+
+  # explicit list, show plots
+  python get_props_guiding.py --doplot file1.fits file2.fits
+
+  # all FITS files under /data/raw/ written to /data/products/
+  python get_props_guiding.py --base /data/raw/ --output /data/products/ "*.fits"
+
+  # use base and output from guiding_config.yaml (no CLI overrides needed)
+  python get_props_guiding.py "*.fits"
+
+  # regenerate README documentation figures
+  python get_props_guiding.py --documentation "*.fits"
+        '''
+    )
+
+    parser.add_argument(
+        'files', nargs='*',
+        help='FITS file(s) or glob patterns to process. '
+             'Patterns are expanded relative to --base (or data_folder in config).')
+    parser.add_argument(
+        '--base', type=str, default=None,
+        help='Base directory prepended to every file / pattern argument. '
+             'Falls back to data_folder in guiding_config.yaml.')
+    parser.add_argument(
+        '--output', type=str, default=None,
+        help='Folder where *_guiding_analysis.fits products are written. '
+             'Falls back to output_folder in guiding_config.yaml; '
+             'if that is also empty, results land next to the input files.')
+    parser.add_argument('--doplot', action='store_true', default=False,
+                        help='Display diagnostic plots interactively.')
+    parser.add_argument('--force', action='store_true', default=False,
+                        help='Reprocess even if the output file already exists.')
+    parser.add_argument('--config', type=str, default=_CONFIG_PATH,
+                        help=f'Path to YAML config file (default: {_CONFIG_PATH})')
+    parser.add_argument('--documentation', action='store_true', default=False,
+                        help='Save all diagnostic plots as PNG files to figures/ '
+                             '(for README documentation). Implies --force.')
+
+    args = parser.parse_args()
+
+    # Reload config if a custom path was provided
+    if args.config != _CONFIG_PATH:
+        CONFIG = load_config(args.config)
+
+    # ---- Resolve base directory (CLI > config > cwd) ----------------------
+    base = args.base or CONFIG.get('data_folder') or ''
+    base = os.path.expanduser(base)
+
+    # ---- Resolve output directory (CLI > config > None = next to input) ---
+    output_folder = args.output or CONFIG.get('output_folder') or None
+    if output_folder:
+        output_folder = os.path.expanduser(output_folder)
+
+    # ---- Expand file patterns relative to base ----------------------------
+    if not args.files:
+        parser.error('Provide at least one FITS file or glob pattern.')
+
+    filepaths = []
+    for pattern in args.files:
+        if base:
+            full_pattern = os.path.join(base, pattern)
+        else:
+            full_pattern = pattern
+        matched = sorted(glob.glob(full_pattern))
+        if not matched:
+            print(f"Warning: no files matched pattern '{full_pattern}'")
+        filepaths.extend(matched)
+
+    if not filepaths:
+        print('No input files found. Exiting.')
+        raise SystemExit(1)
+
+    # ---- Documentation mode -----------------------------------------------
+    _figures_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'figures')
+    save_figures = _figures_dir if args.documentation else None
+    force = args.force or args.documentation
+
+    # ---- Process each file ------------------------------------------------
+    for filepath in filepaths:
+        if not os.path.exists(filepath):
+            print(f"Error: File not found: {filepath}")
+            continue
+
+        print(f"\nProcessing: {filepath}")
+        start_time = time.time()
+        analyze_guiding_image(
+            filepath,
+            doplot=args.doplot,
+            output_folder=output_folder,
+            force=force,
+            save_figures=save_figures,
+        )
+        elapsed_time = time.time() - start_time
+        print(f"Completed in {elapsed_time:.2f} seconds")
+
+

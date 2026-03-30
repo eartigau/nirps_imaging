@@ -1,0 +1,8 @@
+/cosmos99/nirps/apero-data/nirps_he_online/red/2023-06-03/NIRPS_2023-06-04T08_55_30_526_pp_e2dsff_A.fits
+/cosmos99/nirps/apero-data/nirps_he_online/red/2023-06-24/NIRPS_2023-06-25T06_33_55_412_pp_e2dsff_A.fits
+/cosmos99/nirps/apero-data/nirps_he_online/red/2023-07-28/NIRPS_2023-07-29T06_38_50_052_pp_e2dsff_A.fits
+/cosmos99/nirps/apero-data/nirps_he_online/red/2023-08-08/NIRPS_2023-08-09T04_36_10_475_pp_e2dsff_A.fits
+/cosmos99/nirps/apero-data/nirps_he_online/red/2023-08-13/NIRPS_2023-08-14T04_07_17_548_pp_e2dsff_A.fits
+/cosmos99/nirps/apero-data/nirps_he_online/red/2023-08-31/NIRPS_2023-09-01T01_22_58_079_pp_e2dsff_A.fits
+/cosmos99/nirps/apero-data/nirps_he_online/red/2023-10-07/NIRPS_2023-10-08T01_13_05_735_pp_e2dsff_A.fits
+/cosmos99/nirps/apero-data/nirps_he_online/red/2023-10-08/NIRPS_2023-10-09T01_02_43_407_pp_e2dsff_A.fits
