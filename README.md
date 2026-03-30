@@ -11,12 +11,11 @@ git clone https://github.com/eartigau/nirps_imaging.git
 cd nirps_imaging
 ```
 
-### 2. Create and activate a virtual environment (recommended)
+### 2. Create and activate a conda environment
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate        # macOS / Linux
-# On Windows: .venv\Scripts\activate
+conda create -n nirps_imaging python=3.12
+conda activate nirps_imaging
 ```
 
 ### 3. Install the Python dependencies
