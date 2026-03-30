@@ -418,11 +418,13 @@ def analyze_guiding_image(
         return rms
     
     # Minimize RMS to find the optimal center position
-    res = minimize(
-        lambda x: rms2rad(x[0], x[1], rad_rms=rad_rms0),
-        [xcen, ycen],
-        method='Nelder-Mead'
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=RuntimeWarning, message='invalid value encountered')
+        res = minimize(
+            lambda x: rms2rad(x[0], x[1], rad_rms=rad_rms0),
+            [xcen, ycen],
+            method='Nelder-Mead'
+        )
     xcen_opt, ycen_opt = res.x
     
     rad_rms_trim = CONFIG['rad_rms_trim']
@@ -809,12 +811,14 @@ Examples:
         else:
             timing_line = ''
 
-        # Clear screen, replay previous file output, then print current header
+        # Clear screen, replay previous file output, ETA, closing separator
         print('\033[2J\033[H', end='')
         for line in pending_display:
             print(line)
         if timing_line:
             print(timing_line)
+        if pending_display:
+            print('=' * 60)
 
         file_header = [
             '=' * 60,
@@ -822,8 +826,6 @@ Examples:
             f'  {os.path.basename(filepath)}',
             '=' * 60,
         ]
-        for line in file_header:
-            print(line)
 
         if not os.path.exists(filepath):
             pending_display = file_header + [f'Error: File not found: {filepath}']
