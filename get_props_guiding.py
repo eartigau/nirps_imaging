@@ -152,7 +152,14 @@ def remove_hatch(image):
 
     return image
 
-def analyze_guiding_image(filepath, doplot=False, output_folder=None, force=False, save_figures=None):
+def analyze_guiding_image(
+    filepath,
+    doplot=False,
+    output_folder=None,
+    force=False,
+    save_figures=None,
+    save_figures_basename=None,
+):
     """
     Analyze guiding image data from a FITS file.
     
@@ -168,6 +175,8 @@ def analyze_guiding_image(filepath, doplot=False, output_folder=None, force=Fals
         If True, reprocess even if the output FITS file already exists.
     save_figures : str, optional
         Folder to save PNG figures. If None, figures are not saved to disk.
+    save_figures_basename : str, optional
+        Basename used for saved PNG figure names. If None, uses input FITS stem.
         
     Returns
     -------
@@ -375,7 +384,7 @@ def analyze_guiding_image(filepath, doplot=False, output_folder=None, force=Fals
         ax_rad.set_title('Radial Profile')
         if save_figures:
             os.makedirs(save_figures, exist_ok=True)
-            stem = os.path.basename(filepath).replace('.fits', '')
+            stem = save_figures_basename or os.path.basename(filepath).replace('.fits', '')
             fig_rad.savefig(os.path.join(save_figures, f'{stem}_radial_profile.png'), dpi=150, bbox_inches='tight')
             print(f"Saved: {os.path.join(save_figures, stem + '_radial_profile.png')}")
         if doplot:
@@ -471,7 +480,7 @@ def analyze_guiding_image(filepath, doplot=False, output_folder=None, force=Fals
         ax_ang.legend()
         if save_figures:
             os.makedirs(save_figures, exist_ok=True)
-            stem = os.path.basename(filepath).replace('.fits', '')
+            stem = save_figures_basename or os.path.basename(filepath).replace('.fits', '')
             fig_ang.savefig(os.path.join(save_figures, f'{stem}_angular_residuals.png'), dpi=150, bbox_inches='tight')
             print(f"Saved: {os.path.join(save_figures, stem + '_angular_residuals.png')}")
         if doplot:
@@ -509,7 +518,7 @@ def analyze_guiding_image(filepath, doplot=False, output_folder=None, force=Fals
 
     if save_figures:
         os.makedirs(save_figures, exist_ok=True)
-        stem = os.path.basename(filepath).replace('.fits', '')
+        stem = save_figures_basename or os.path.basename(filepath).replace('.fits', '')
         fig.savefig(os.path.join(save_figures, f'{stem}_data_model_residual.png'), dpi=150, bbox_inches='tight')
         print(f"Saved: {os.path.join(save_figures, stem + '_data_model_residual.png')}")
     if doplot:
@@ -699,6 +708,7 @@ Examples:
     # ---- Documentation mode -----------------------------------------------
     _figures_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'figures')
     save_figures = _figures_dir if args.documentation else None
+    save_figures_basename = 'documentation' if args.documentation else None
     force = args.force or args.documentation
 
     # ---- Process each file ------------------------------------------------
@@ -715,6 +725,7 @@ Examples:
             output_folder=output_folder,
             force=force,
             save_figures=save_figures,
+            save_figures_basename=save_figures_basename,
         )
         elapsed_time = time.time() - start_time
         print(f"Completed in {elapsed_time:.2f} seconds")

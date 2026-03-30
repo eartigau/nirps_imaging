@@ -141,18 +141,20 @@ and a warning is printed.
 
 ## Diagnostic figures
 
-Running with `--documentation` saves three PNG files per input file into `figures/`.
+Running with `--documentation` saves three PNG files with fixed names in `figures/`.
+The names are overwritten on each run, so README links stay stable and do not depend
+on the input FITS filename.
 
-### 1. Radial profile — `*_radial_profile.png`
+### 1. Radial profile — `documentation_radial_profile.png`
 
 Median flux versus radius (pixels) around the optimised PSF centre.
 The profile is used to build the circularly-symmetric 2-D model.
 
-![radial profile](figures/NIRPS_2025-07-28T23_07_40_654_radial_profile.png)
+![radial profile](figures/documentation_radial_profile.png)
 
 ---
 
-### 2. Angular residuals — `*_angular_residuals.png`
+### 2. Angular residuals — `documentation_angular_residuals.png`
 
 Summed residual flux in each azimuthal sector (bin size set by `angular_bin_size`),
 normalised to the total model flux. The solid curve is a Fourier harmonic fit
@@ -162,17 +164,17 @@ amplitude come from the maximum of that fitted curve rather than from the
 coarse bin centers. A high peak at one angle may indicate a diffraction spike,
 a companion, or a tracking artefact.
 
-![angular residuals](figures/NIRPS_2025-07-28T23_07_40_654_angular_residuals.png)
+![angular residuals](figures/documentation_angular_residuals.png)
 
 ---
 
-### 3. Data / Model / Residual — `*_data_model_residual.png`
+### 3. Data / Model / Residual — `documentation_data_model_residual.png`
 
 Side-by-side view of (left) the background-subtracted guiding frame, (centre) the
 radially-symmetric model, and (right) the residuals scaled to ±`plot_residual_scale`
 × peak flux.
 
-![data model residual](figures/NIRPS_2025-07-28T23_07_40_654_data_model_residual.png)
+![data model residual](figures/documentation_data_model_residual.png)
 
 ---
 
