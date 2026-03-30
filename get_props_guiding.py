@@ -27,6 +27,8 @@ import time
 import yaml
 import getpass
 import fnmatch
+import io
+from contextlib import redirect_stdout
 
 # ---------------------------------------------------------------------------
 # Load configuration from YAML (falls back to built-in defaults if not found)
@@ -788,34 +790,67 @@ Examples:
     print('=' * 60)
 
     # ---- Process each file ------------------------------------------------
+    # Output from each file is captured and shown while the *next* file runs,
+    # so the info stays on screen until we naturally reach the next iteration.
     n_done = 0
+    elapsed_times = []
+    pending_display = []  # lines from the previous file, shown at next iteration
+
     for filepath in filepaths:
         n_done += 1
-        n_todo = n_total - n_done
+        n_remaining = n_total - n_done
 
-        # Clear screen and print per-file progress header
+        # ETA based on average elapsed time so far
+        if elapsed_times:
+            avg = sum(elapsed_times) / len(elapsed_times)
+            eta_sec = avg * (n_remaining + 1)
+            eta_str = f'{int(eta_sec // 60)}m {int(eta_sec % 60)}s'
+            timing_line = f'  Avg per file: {avg:.1f}s  |  Est. time left: {eta_str}'
+        else:
+            timing_line = ''
+
+        # Clear screen, replay previous file output, then print current header
         print('\033[2J\033[H', end='')
-        print('=' * 60)
-        print(f'  File {n_done}/{n_total}  |  done: {n_done - 1}  |  to do: {n_todo + 1}')
-        print(f'  {os.path.basename(filepath)}')
-        print('=' * 60)
+        for line in pending_display:
+            print(line)
+        if timing_line:
+            print(timing_line)
+
+        file_header = [
+            '=' * 60,
+            f'  File {n_done}/{n_total}  |  done: {n_done - 1}  |  to do: {n_remaining}',
+            f'  {os.path.basename(filepath)}',
+            '=' * 60,
+        ]
+        for line in file_header:
+            print(line)
 
         if not os.path.exists(filepath):
-            print(f'Error: File not found: {filepath}')
+            pending_display = file_header + [f'Error: File not found: {filepath}']
             continue
 
+        # Capture all output from analyze_guiding_image into a buffer
+        buf = io.StringIO()
         start_time = time.time()
-        analyze_guiding_image(
-            filepath,
-            doplot=args.doplot,
-            output_folder=output_folder,
-            force=force,
-            save_figures=save_figures,
-            save_figures_basename=save_figures_basename,
-        )
+        with redirect_stdout(buf):
+            analyze_guiding_image(
+                filepath,
+                doplot=args.doplot,
+                output_folder=output_folder,
+                force=force,
+                save_figures=save_figures,
+                save_figures_basename=save_figures_basename,
+            )
         elapsed_time = time.time() - start_time
-        print(f'Completed in {elapsed_time:.2f} seconds')
+        elapsed_times.append(elapsed_time)
 
+        captured = buf.getvalue().rstrip('\n').split('\n') if buf.getvalue() else []
+        pending_display = file_header + captured + [f'Completed in {elapsed_time:.2f} seconds']
+
+    # Show the last file's output after the loop
+    print('\033[2J\033[H', end='')
+    for line in pending_display:
+        print(line)
     print('=' * 60)
     print(f'  All {n_total} file(s) processed.')
     print('=' * 60)
