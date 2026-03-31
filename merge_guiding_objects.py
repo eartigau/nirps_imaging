@@ -127,18 +127,24 @@ def extract_object_from_header(header: fits.Header) -> Optional[str]:
     return None
 
 
-def read_analysis_images(filepath: str) -> Tuple[np.ndarray, np.ndarray, fits.Header]:
+def read_analysis_images(filepath: str) -> Tuple[np.ndarray, np.ndarray, float, float, fits.Header]:
     """
-    Read GUIDING and RESIDUAL 2D images from a guiding analysis FITS file.
+    Read GUIDING and RESIDUAL images plus the optimizer-derived center
+    (XCEN/YCEN keywords written by get_props_guiding.py) from a
+    *_guiding_analysis.fits file.
 
     Returns
     -------
     guiding : ndarray
-        GUIDING image data as float array.
+        GUIDING extension (raw image before radial-profile subtraction).
     residual : ndarray
-        RESIDUAL image data as float array.
+        RESIDUAL extension (image after radial-profile subtraction).
+    xcen : float
+        Optimal X center (column) stored in primary header keyword XCEN.
+    ycen : float
+        Optimal Y center (row) stored in primary header keyword YCEN.
     header : fits.Header
-        Primary header used for object selection and metadata.
+        Primary header (used for object name and metadata).
     """
 
     with fits.open(filepath, memmap=False) as hdul:
@@ -168,52 +174,53 @@ def read_analysis_images(filepath: str) -> Tuple[np.ndarray, np.ndarray, fits.He
             f"{guiding.shape} vs {residual.shape}"
         )
 
-    return guiding, residual, header
+    xcen = header.get("XCEN")
+    ycen = header.get("YCEN")
+    if xcen is None or ycen is None:
+        raise ValueError(
+            f"Missing XCEN/YCEN keywords in primary header of {filepath}. "
+            "Re-run get_props_guiding.py to regenerate the analysis products."
+        )
+
+    return guiding, residual, float(xcen), float(ycen), header
 
 
-def robust_centroid(image: np.ndarray) -> Tuple[float, float]:
-    """Estimate centroid from positive flux above a robust background."""
+def integer_shift_with_nan_padding(image: np.ndarray, dy: int, dx: int) -> np.ndarray:
+    """
+    Shift a 2D image by integer pixel offsets using np.roll and replace the
+    wrapped edge pixels that were rolled in with NaN.
 
-    work = np.asarray(image, dtype=float).copy()
-    finite = np.isfinite(work)
-    if not np.any(finite):
-        raise ValueError("Image has no finite pixels")
+    Parameters
+    ----------
+    image : ndarray
+        2D input image (float).  May contain NaN.
+    dy : int
+        Shift along axis 0 (rows).  Positive moves content downward
+        (toward higher row indices).
+    dx : int
+        Shift along axis 1 (columns).  Positive moves content rightward
+        (toward higher column indices).
 
-    background = np.nanmedian(work)
-    work -= background
-    work[~np.isfinite(work)] = np.nan
+    Returns
+    -------
+    ndarray
+        Shifted image with wrapped edges replaced by NaN.
+    """
+    out = np.roll(image, shift=(dy, dx), axis=(0, 1)).astype(float, copy=True)
 
-    # Keep only positive residual flux to avoid centroid bias from background noise.
-    work[work < 0] = 0.0
-
-    flux_sum = np.nansum(work)
-    if not np.isfinite(flux_sum) or flux_sum <= 0:
-        y_mid = (image.shape[0] - 1) / 2.0
-        x_mid = (image.shape[1] - 1) / 2.0
-        return x_mid, y_mid
-
-    y_idx, x_idx = np.indices(image.shape, dtype=float)
-    xcen = np.nansum(work * x_idx) / flux_sum
-    ycen = np.nansum(work * y_idx) / flux_sum
-    return float(xcen), float(ycen)
-
-
-def roll_with_nan_padding(image: np.ndarray, dy: int, dx: int) -> np.ndarray:
-    """Shift image with np.roll, then blank wrapped edges with NaN."""
-
-    rolled = np.roll(image, shift=(dy, dx), axis=(0, 1)).astype(float, copy=False)
-
+    # Blank the rows that were wrapped in.
     if dy > 0:
-        rolled[:dy, :] = np.nan
+        out[:dy, :] = np.nan   # top dy rows are garbage from the bottom wrap
     elif dy < 0:
-        rolled[dy:, :] = np.nan
+        out[dy:, :] = np.nan   # bottom |dy| rows are garbage from the top wrap
 
+    # Blank the columns that were wrapped in.
     if dx > 0:
-        rolled[:, :dx] = np.nan
+        out[:, :dx] = np.nan   # left dx cols are garbage from the right wrap
     elif dx < 0:
-        rolled[:, dx:] = np.nan
+        out[:, dx:] = np.nan   # right |dx| cols are garbage from the left wrap
 
-    return rolled
+    return out
 
 
 def make_merged_product(
@@ -238,7 +245,7 @@ def make_merged_product(
 
     for filepath in selected_files:
         try:
-            guiding_image, residual_image, _header = read_analysis_images(filepath)
+            guiding_image, residual_image, xcen, ycen, _header = read_analysis_images(filepath)
         except Exception as exc:
             print(f"  Skip unreadable file: {filepath} ({exc})")
             continue
@@ -251,17 +258,11 @@ def make_merged_product(
             )
             continue
 
-        try:
-            xcen, ycen = robust_centroid(guiding_image)
-        except Exception as exc:
-            print(f"  Skip centroid failure: {filepath} ({exc})")
-            continue
-
         guiding_images.append(np.asarray(guiding_image, dtype=float))
         residual_images.append(np.asarray(residual_image, dtype=float))
         centers.append((xcen, ycen))
         used_files.append(filepath)
-        print(f"  Keep: {os.path.basename(filepath)} | centroid=({xcen:.2f}, {ycen:.2f})")
+        print(f"  Keep: {os.path.basename(filepath)} | XCEN={xcen:.2f}, YCEN={ycen:.2f}")
 
     if not guiding_images:
         print(f"  No valid images left for '{object_name}' after filtering.")
@@ -272,8 +273,17 @@ def make_merged_product(
     y_med = float(np.nanmedian(centers_arr[:, 1]))
     print(f"  Median centroid target: ({x_med:.2f}, {y_med:.2f})")
 
-    registered_guiding_cube = np.full((len(guiding_images), shape_ref[0], shape_ref[1]), np.nan, dtype=float)
-    registered_residual_cube = np.full((len(residual_images), shape_ref[0], shape_ref[1]), np.nan, dtype=float)
+    # --- Registration ---
+    # Use the XCEN/YCEN values that were optimized by get_props_guiding.py.
+    # The shift needed to align frame i to the median position is:
+    #   dx = x_med - xcen_i   (positive → shift content rightward)
+    #   dy = y_med - ycen_i   (positive → shift content downward)
+    # np.roll(arr, +k, axis=1) moves each column value to column+k,
+    # so a star at xcen_i ends up at xcen_i + dx = x_med.  ✓
+
+    n_frames = len(guiding_images)
+    registered_guiding_cube = np.full((n_frames, shape_ref[0], shape_ref[1]), np.nan, dtype=float)
+    registered_residual_cube = np.full((n_frames, shape_ref[0], shape_ref[1]), np.nan, dtype=float)
 
     shifts: List[Tuple[int, int]] = []
     for idx, ((guiding_image, residual_image), (xcen, ycen)) in enumerate(
@@ -282,16 +292,16 @@ def make_merged_product(
         dx = int(np.rint(x_med - xcen))
         dy = int(np.rint(y_med - ycen))
         shifts.append((dy, dx))
-        registered_guiding_cube[idx] = roll_with_nan_padding(guiding_image, dy=dy, dx=dx)
-        registered_residual_cube[idx] = roll_with_nan_padding(residual_image, dy=dy, dx=dx)
+        registered_guiding_cube[idx] = integer_shift_with_nan_padding(guiding_image, dy=dy, dx=dx)
+        registered_residual_cube[idx] = integer_shift_with_nan_padding(residual_image, dy=dy, dx=dx)
         print(
-            f"  Register frame {idx + 1}/{len(guiding_images)}: "
-            f"shift(dy,dx)=({dy},{dx})"
+            f"  Register frame {idx + 1}/{n_frames}: "
+            f"XCEN={xcen:.2f}, YCEN={ycen:.2f}  ->  shift(dy={dy}, dx={dx})"
         )
 
     median_guiding = np.nanmedian(registered_guiding_cube, axis=0)
     median_residual = np.nanmedian(registered_residual_cube, axis=0)
-    print("  Built median GUIDING and RESIDUAL images")
+    print(f"  Median stack done: {n_frames} frames, image shape {shape_ref}")
 
     os.makedirs(output_folder_merged, exist_ok=True)
     object_tag = "_".join(object_name.strip().split())
@@ -300,14 +310,18 @@ def make_merged_product(
 
     hdr = fits.Header()
     hdr["OBJECT"] = object_name
-    hdr["NINPUT"] = len(used_files)
-    hdr["XCENMED"] = (x_med, "Median X centroid before registration")
-    hdr["YCENMED"] = (y_med, "Median Y centroid before registration")
-    hdr["COMMENT"] = "GUIDING and RESIDUAL aligned with np.roll and NaN-padded edges"
+    hdr["NINPUT"] = (len(used_files), "Number of frames combined")
+    hdr["XCENMED"] = (x_med, "Median XCEN used as registration target")
+    hdr["YCENMED"] = (y_med, "Median YCEN used as registration target")
+    hdr["COMMENT"] = "Aligned with integer np.roll; wrapped edges replaced by NaN"
 
     primary_hdu = fits.PrimaryHDU(header=hdr)
+    # Extension 1: median of registered GUIDING images (pre-radial-subtraction)
     guiding_hdu = fits.ImageHDU(median_guiding, name="GUIDING")
+    # Extension 2: median of registered RESIDUAL images (post-radial-subtraction)
     residual_hdu = fits.ImageHDU(median_residual, name="RESIDUAL")
+    # Extension 3: full registered cube of GUIDING frames
+    cube_hdu = fits.ImageHDU(registered_guiding_cube, name="REGISTERED_CUBE")
 
     col_file = fits.Column(name="FILE", format="A256", array=np.asarray(used_files, dtype="S256"))
     col_x = fits.Column(name="XCEN", format="D", array=np.asarray([c[0] for c in centers]))
@@ -319,7 +333,7 @@ def make_merged_product(
         name="PROVENANCE",
     )
 
-    fits.HDUList([primary_hdu, guiding_hdu, residual_hdu, provenance_hdu]).writeto(
+    fits.HDUList([primary_hdu, guiding_hdu, residual_hdu, cube_hdu, provenance_hdu]).writeto(
         output_path,
         overwrite=True,
     )
