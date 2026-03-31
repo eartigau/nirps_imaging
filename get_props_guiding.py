@@ -910,6 +910,7 @@ Examples:
         file_header = [
             '=' * 60,
             f'  File {n_done}/{n_total}  |  done: {n_done - 1}  |  to do: {n_remaining}',
+            f'  Total files: {n_found}  |  already processed: {already_processed}',
             f'  {os.path.basename(filepath)}',
             '=' * 60,
         ]
