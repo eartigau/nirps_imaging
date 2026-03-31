@@ -239,7 +239,7 @@ def fit_angular_harmonics(theta_deg, values, max_harmonics=5, step_deg=0.1):
     return {
         'theta_deg': theta_fine,
         'fit_values': fit_values,
-        'peak_angle_deg': float(theta_fine[peak_idx]),
+        'peak_angle_deg': round(float(theta_fine[peak_idx]), 2),
         'peak_value': float(fit_values[peak_idx]),
         'coeffs': coeffs,
         'n_harmonics': n_harmonics,

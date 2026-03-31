@@ -43,6 +43,12 @@ wcs_rotation_angle: 45.0
 # Fraction of peak flux used for residual image vmin/vmax
 plot_residual_scale: 0.1
 
+# --- Object merge products ---
+# List of object names to merge into median registered FOV products.
+# Matching is case-insensitive and ignores extra spaces.
+merge_objects:
+  - Proxima
+
 # --- User-specific folders ---
 # Folder settings are selected by current OS username.
 # If the username is not present, user.default is used and a warning is printed.
