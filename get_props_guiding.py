@@ -35,6 +35,8 @@ from contextlib import redirect_stdout
 # ---------------------------------------------------------------------------
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'guiding_config.yaml')
 _DEFAULTS = {
+    'xcen_default': 360,
+    'ycen_default': 220,
     'rad_rms': 50,
     'rad_rms_trim': 5,
     'rad_bin_step_inner': 0.5,
@@ -116,6 +118,46 @@ def load_config(config_path=_CONFIG_PATH):
     return cfg
 
 CONFIG = load_config()
+
+
+def get_output_path(filepath, output_folder=None):
+    """Build the expected output product path for an input FITS file."""
+
+    if output_folder is not None:
+        output_filename = os.path.basename(filepath).replace('.fits', '_guiding_analysis.fits')
+        return os.path.join(output_folder, output_filename)
+    return filepath.replace('.fits', '_guiding_analysis.fits')
+
+
+def get_skip_token_path(filepath, output_folder=None):
+    """Build hidden token path used to mark files with no guiding window."""
+
+    token_name = f".{os.path.basename(filepath)}"
+    if output_folder is not None:
+        return os.path.join(output_folder, token_name)
+    return os.path.join(os.path.dirname(filepath), token_name)
+
+
+def touch_skip_token(filepath, output_folder=None):
+    """Create an empty hidden token file to skip this input on future runs."""
+
+    token_path = get_skip_token_path(filepath, output_folder=output_folder)
+    token_dir = os.path.dirname(token_path) or '.'
+    os.makedirs(token_dir, exist_ok=True)
+    with open(token_path, 'a', encoding='utf-8'):
+        pass
+    os.utime(token_path, None)
+    return token_path
+
+
+def format_duration(total_seconds):
+    """Format duration as days/hours/minutes/seconds."""
+
+    seconds = max(0, int(round(float(total_seconds))))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{days}d {hours}h {minutes}m {secs}s"
 
 def smart_fmt(value):
     """Format floats with <=2 decimals when |x|>1, otherwise <=5 decimals."""
@@ -251,25 +293,27 @@ def analyze_guiding_image(
         
     Returns
     -------
-    None
-        Writes output FITS file; optionally displays or saves plots.
+    str
+        Processing status: processed or a skip/error code.
         
     Notes
     -----
     Gracefully skips processing if the 'GUIDING' extension is not found.
     """
     
-    # Determine output path
-    if output_folder is not None:
-        output_filename = os.path.basename(filepath).replace('.fits', '_guiding_analysis.fits')
-        output_path = os.path.join(output_folder, output_filename)
-    else:
-        output_path = filepath.replace('.fits', '_guiding_analysis.fits')
+    # Determine output and hidden-token paths
+    output_path = get_output_path(filepath, output_folder=output_folder)
+    token_path = get_skip_token_path(filepath, output_folder=output_folder)
+
+    # Skip quickly if a hidden token exists (unless force=True)
+    if os.path.exists(token_path) and not force:
+        print(f"Skip token already exists: {token_path}. Skipping (use --force to reprocess).")
+        return 'skipped_token'
     
     # Skip if output file already exists (unless force=True)
     if os.path.exists(output_path) and not force:
         print(f"Output file already exists: {output_path}. Skipping (use --force to reprocess).")
-        return
+        return 'skipped_output'
     
     # Attempt to load the GUIDING extension from the FITS file
     try:
@@ -277,11 +321,12 @@ def analyze_guiding_image(
         # Read header from primary HDU for RA/DEC
         hdr = fits.getheader(filepath, 0)
     except KeyError:
-        print(f"Warning: 'GUIDING' extension not found in {filepath}. Skipping analysis.")
-        return
+        token_path = touch_skip_token(filepath, output_folder=output_folder)
+        print(f"Warning: 'GUIDING' extension not found in {filepath}. Created skip token: {token_path}")
+        return 'skipped_missing_guiding'
     except Exception as e:
         print(f"Error reading file {filepath}: {e}")
-        return
+        return 'error'
     
     guiding_image = guiding_image0.copy()
     
@@ -298,17 +343,15 @@ def analyze_guiding_image(
     ypix, xpix = np.meshgrid(np.arange(sz[0]), np.arange(sz[1]), indexing='ij')
     ypix, xpix = ypix.astype(float), xpix.astype(float)
     
-    # Create mask for all valid pixels
-    mask = np.isfinite(guiding_image)
-    
-    # Compute initial center position using flux-weighted centroid
-    flux_sum = np.nansum(guiding_image[mask])
-    if flux_sum == 0 or not np.isfinite(flux_sum):
-        print(f"Warning: Could not determine a valid centroid for {filepath}. Skipping analysis.")
-        return
-
-    xcen = np.nansum(guiding_image[mask] * xpix[mask]) / flux_sum
-    ycen = np.nansum(guiding_image[mask] * ypix[mask]) / flux_sum
+    # Initial center comes from config and is used as optimizer start point.
+    xcen = float(CONFIG.get('xcen_default', 360.0))
+    ycen = float(CONFIG.get('ycen_default', 220.0))
+    if not (0 <= xcen < sz[1] and 0 <= ycen < sz[0]):
+        print(
+            f"Warning: Default center ({xcen}, {ycen}) is outside image bounds "
+            f"for {filepath}. Skipping analysis."
+        )
+        return 'error'
 
     # rad_rms
     rad_rms0 = CONFIG['rad_rms']
@@ -469,7 +512,7 @@ def analyze_guiding_image(
     rad_profile_full, profile_full = filter_profile_points(rad_profile_full, profile_full)
     if rad_profile_full.size < 2:
         print(f"Warning: Insufficient valid annuli to build a spline model for {filepath}. Skipping analysis.")
-        return
+        return 'error'
 
     spl = ius(rad_profile_full, profile_full, k=1, ext=1)
     
@@ -515,7 +558,7 @@ def analyze_guiding_image(
         residual_flux_bin /= norm
     else:
         print("Warning: Normalization value is zero or negative.")
-        return
+        return 'error'
 
     harmonic_fit = fit_angular_harmonics(
         theta_bin_center,
@@ -525,7 +568,7 @@ def analyze_guiding_image(
     )
     if harmonic_fit is None:
         print(f"Warning: Could not fit angular harmonics for {filepath}. Skipping analysis.")
-        return
+        return 'error'
     
     # Plot 2: Angular residuals
     if doplot or save_figures:
@@ -695,6 +738,7 @@ def analyze_guiding_image(
         hdul.writeto(output_path, overwrite=True)
     
     print(f"Output written to: {output_path}")
+    return 'processed'
 
 
 
@@ -787,6 +831,9 @@ Examples:
             print(f"Warning: no files matched pattern '{full_pattern}'")
         filepaths.extend(matched)
 
+    # Remove duplicates while preserving deterministic ordering.
+    filepaths = sorted(set(filepaths))
+
     if not filepaths:
         print('No input files found. Exiting.')
         raise SystemExit(1)
@@ -797,17 +844,39 @@ Examples:
     save_figures_basename = 'documentation' if args.documentation else None
     force = args.force or args.documentation
 
+    # ---- Pre-filter by existing outputs/tokens when not forcing ----------
+    n_found = len(filepaths)
+    already_processed = 0
+    pending_filepaths = []
+
+    if not force:
+        for filepath in filepaths:
+            output_exists = os.path.exists(get_output_path(filepath, output_folder=output_folder))
+            token_exists = os.path.exists(get_skip_token_path(filepath, output_folder=output_folder))
+            if output_exists or token_exists:
+                already_processed += 1
+            else:
+                pending_filepaths.append(filepath)
+    else:
+        pending_filepaths = filepaths
+
     # ---- Pre-run summary --------------------------------------------------
-    n_total = len(filepaths)
+    n_total = len(pending_filepaths)
     print('=' * 60)
     print('  NIRPS Guiding Analysis')
     print('=' * 60)
-    print(f'  Files to process : {n_total}')
+    print(f'  Files found            : {n_found}')
+    print(f'  Already processed      : {already_processed}')
+    print(f'  Files to process now   : {n_total}')
     print(f'  Base directory   : {base or "(current directory)"}')
     print(f'  Output directory : {output_folder or "(next to each input file)"}')
     print(f'  Force reprocess  : {force}')
     print(f'  Show plots       : {args.doplot}')
     print('=' * 60)
+
+    if n_total == 0:
+        print('No pending files to process. Exiting.')
+        raise SystemExit(0)
 
     # ---- Process each file ------------------------------------------------
     # Output from each file is captured and shown while the *next* file runs,
@@ -816,7 +885,7 @@ Examples:
     elapsed_times = []
     pending_display = []  # lines from the previous file, shown at next iteration
 
-    for filepath in filepaths:
+    for filepath in pending_filepaths:
         n_done += 1
         n_remaining = n_total - n_done
 
@@ -824,7 +893,7 @@ Examples:
         if elapsed_times:
             avg = sum(elapsed_times) / len(elapsed_times)
             eta_sec = avg * (n_remaining + 1)
-            eta_str = f'{int(eta_sec // 60)}m {int(eta_sec % 60)}s'
+            eta_str = format_duration(eta_sec)
             timing_line = f'  Avg per file: {smart_fmt(avg)}s  |  Est. time left: {eta_str}'
         else:
             timing_line = ''
@@ -853,7 +922,7 @@ Examples:
         buf = io.StringIO()
         start_time = time.time()
         with redirect_stdout(buf):
-            analyze_guiding_image(
+            status = analyze_guiding_image(
                 filepath,
                 doplot=args.doplot,
                 output_folder=output_folder,
@@ -862,17 +931,20 @@ Examples:
                 save_figures_basename=save_figures_basename,
             )
         elapsed_time = time.time() - start_time
-        elapsed_times.append(elapsed_time)
+        if status == 'processed':
+            elapsed_times.append(elapsed_time)
 
         captured = buf.getvalue().rstrip('\n').split('\n') if buf.getvalue() else []
-        pending_display = file_header + captured + [f'Completed in {smart_fmt(elapsed_time)} seconds']
+        status_line = f'Status: {status}' if status else 'Status: unknown'
+        pending_display = file_header + captured + [status_line, f'Completed in {smart_fmt(elapsed_time)} seconds']
 
     # Show the last file's output after the loop
     print('\033[2J\033[H', end='')
     for line in pending_display:
         print(line)
     print('=' * 60)
-    print(f'  All {n_total} file(s) processed.')
+    print(f'  Finished {n_total} pending file(s).')
+    print(f'  Newly processed outputs: {len(elapsed_times)}')
     print('=' * 60)
 
 

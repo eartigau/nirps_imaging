@@ -1,6 +1,12 @@
 # Guiding RMS Analysis Configuration
 # All hard-coded parameters for get_props_guiding.py
 
+# --- Center initialization for minimization ---
+# Initial center guess (pixels) for RMS minimization.
+# This is used as the optimizer starting point instead of flux barycentering.
+xcen_default: 360
+ycen_default: 220
+
 # --- Radial profiling ---
 # Primary radial analysis radius in pixels
 rad_rms: 50
