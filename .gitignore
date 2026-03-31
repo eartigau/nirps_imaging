@@ -34,3 +34,6 @@ env/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
+
+# Local helper script/folder at repository root
+/python
