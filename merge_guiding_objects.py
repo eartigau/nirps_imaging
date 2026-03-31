@@ -127,46 +127,48 @@ def extract_object_from_header(header: fits.Header) -> Optional[str]:
     return None
 
 
-def read_guiding_image(filepath: str) -> Tuple[np.ndarray, fits.Header, str]:
+def read_analysis_images(filepath: str) -> Tuple[np.ndarray, np.ndarray, fits.Header]:
     """
-    Read a 2D guiding image and primary header from FITS file.
+    Read GUIDING and RESIDUAL 2D images from a guiding analysis FITS file.
 
     Returns
     -------
-    image : ndarray
-        Guiding image data as float array.
+    guiding : ndarray
+        GUIDING image data as float array.
+    residual : ndarray
+        RESIDUAL image data as float array.
     header : fits.Header
         Primary header used for object selection and metadata.
-    image_ext : str
-        Extension label used for provenance.
     """
 
     with fits.open(filepath, memmap=False) as hdul:
         header = hdul[0].header.copy()
 
-        # Preferred: explicit GUIDING extension by name.
+        guiding = None
+        residual = None
+
         for hdu in hdul:
             extname = str(hdu.header.get("EXTNAME", "")).strip().upper()
             if extname == "GUIDING" and getattr(hdu, "data", None) is not None:
                 data = np.asarray(hdu.data, dtype=float)
                 if data.ndim == 2:
-                    return data, header, "GUIDING"
+                    guiding = data
+            if extname == "RESIDUAL" and getattr(hdu, "data", None) is not None:
+                data = np.asarray(hdu.data, dtype=float)
+                if data.ndim == 2:
+                    residual = data
 
-        # Fallback 1: primary HDU if 2D.
-        if getattr(hdul[0], "data", None) is not None:
-            data0 = np.asarray(hdul[0].data, dtype=float)
-            if data0.ndim == 2:
-                return data0, header, "PRIMARY"
+    if guiding is None:
+        raise ValueError(f"Missing 2D GUIDING extension in {filepath}")
+    if residual is None:
+        raise ValueError(f"Missing 2D RESIDUAL extension in {filepath}")
+    if guiding.shape != residual.shape:
+        raise ValueError(
+            f"GUIDING/RESIDUAL shape mismatch in {filepath}: "
+            f"{guiding.shape} vs {residual.shape}"
+        )
 
-        # Fallback 2: first 2D image extension.
-        for idx, hdu in enumerate(hdul[1:], start=1):
-            if getattr(hdu, "data", None) is None:
-                continue
-            datai = np.asarray(hdu.data, dtype=float)
-            if datai.ndim == 2:
-                return datai, header, f"HDU{idx}"
-
-    raise ValueError(f"No 2D image found in {filepath}")
+    return guiding, residual, header
 
 
 def robust_centroid(image: np.ndarray) -> Tuple[float, float]:
@@ -222,9 +224,13 @@ def make_merged_product(
     """Build registered cube and median FOV for one object."""
 
     if not selected_files:
+        print(f"  No files selected for object '{object_name}'.")
         return None
 
-    images: List[np.ndarray] = []
+    print(f"  Building cube for '{object_name}' from {len(selected_files)} file(s)")
+
+    guiding_images: List[np.ndarray] = []
+    residual_images: List[np.ndarray] = []
     centers: List[Tuple[float, float]] = []
     used_files: List[str] = []
 
@@ -232,46 +238,60 @@ def make_merged_product(
 
     for filepath in selected_files:
         try:
-            image, _header, _ext = read_guiding_image(filepath)
+            guiding_image, residual_image, _header = read_analysis_images(filepath)
         except Exception as exc:
             print(f"  Skip unreadable file: {filepath} ({exc})")
             continue
 
         if shape_ref is None:
-            shape_ref = image.shape
-        if image.shape != shape_ref:
+            shape_ref = guiding_image.shape
+        if guiding_image.shape != shape_ref:
             print(
-                f"  Skip shape mismatch: {filepath} has {image.shape}, expected {shape_ref}"
+                f"  Skip shape mismatch: {filepath} has {guiding_image.shape}, expected {shape_ref}"
             )
             continue
 
         try:
-            xcen, ycen = robust_centroid(image)
+            xcen, ycen = robust_centroid(guiding_image)
         except Exception as exc:
             print(f"  Skip centroid failure: {filepath} ({exc})")
             continue
 
-        images.append(np.asarray(image, dtype=float))
+        guiding_images.append(np.asarray(guiding_image, dtype=float))
+        residual_images.append(np.asarray(residual_image, dtype=float))
         centers.append((xcen, ycen))
         used_files.append(filepath)
+        print(f"  Keep: {os.path.basename(filepath)} | centroid=({xcen:.2f}, {ycen:.2f})")
 
-    if not images:
+    if not guiding_images:
+        print(f"  No valid images left for '{object_name}' after filtering.")
         return None
 
     centers_arr = np.asarray(centers, dtype=float)
     x_med = float(np.nanmedian(centers_arr[:, 0]))
     y_med = float(np.nanmedian(centers_arr[:, 1]))
+    print(f"  Median centroid target: ({x_med:.2f}, {y_med:.2f})")
 
-    registered_cube = np.full((len(images), shape_ref[0], shape_ref[1]), np.nan, dtype=float)
+    registered_guiding_cube = np.full((len(guiding_images), shape_ref[0], shape_ref[1]), np.nan, dtype=float)
+    registered_residual_cube = np.full((len(residual_images), shape_ref[0], shape_ref[1]), np.nan, dtype=float)
 
     shifts: List[Tuple[int, int]] = []
-    for idx, (image, (xcen, ycen)) in enumerate(zip(images, centers)):
+    for idx, ((guiding_image, residual_image), (xcen, ycen)) in enumerate(
+        zip(zip(guiding_images, residual_images), centers)
+    ):
         dx = int(np.rint(x_med - xcen))
         dy = int(np.rint(y_med - ycen))
         shifts.append((dy, dx))
-        registered_cube[idx] = roll_with_nan_padding(image, dy=dy, dx=dx)
+        registered_guiding_cube[idx] = roll_with_nan_padding(guiding_image, dy=dy, dx=dx)
+        registered_residual_cube[idx] = roll_with_nan_padding(residual_image, dy=dy, dx=dx)
+        print(
+            f"  Register frame {idx + 1}/{len(guiding_images)}: "
+            f"shift(dy,dx)=({dy},{dx})"
+        )
 
-    median_fov = np.nanmedian(registered_cube, axis=0)
+    median_guiding = np.nanmedian(registered_guiding_cube, axis=0)
+    median_residual = np.nanmedian(registered_residual_cube, axis=0)
+    print("  Built median GUIDING and RESIDUAL images")
 
     os.makedirs(output_folder_merged, exist_ok=True)
     object_tag = "_".join(object_name.strip().split())
@@ -283,11 +303,11 @@ def make_merged_product(
     hdr["NINPUT"] = len(used_files)
     hdr["XCENMED"] = (x_med, "Median X centroid before registration")
     hdr["YCENMED"] = (y_med, "Median Y centroid before registration")
-    hdr["COMMENT"] = "Images aligned with np.roll and NaN-padded wrapped edges"
+    hdr["COMMENT"] = "GUIDING and RESIDUAL aligned with np.roll and NaN-padded edges"
 
     primary_hdu = fits.PrimaryHDU(header=hdr)
-    median_hdu = fits.ImageHDU(median_fov, name="MEDIAN_FOV")
-    cube_hdu = fits.ImageHDU(registered_cube, name="REGISTERED_CUBE")
+    guiding_hdu = fits.ImageHDU(median_guiding, name="GUIDING")
+    residual_hdu = fits.ImageHDU(median_residual, name="RESIDUAL")
 
     col_file = fits.Column(name="FILE", format="A256", array=np.asarray(used_files, dtype="S256"))
     col_x = fits.Column(name="XCEN", format="D", array=np.asarray([c[0] for c in centers]))
@@ -299,10 +319,13 @@ def make_merged_product(
         name="PROVENANCE",
     )
 
-    fits.HDUList([primary_hdu, median_hdu, cube_hdu, provenance_hdu]).writeto(
+    fits.HDUList([primary_hdu, guiding_hdu, residual_hdu, provenance_hdu]).writeto(
         output_path,
         overwrite=True,
     )
+
+    print(f"  Saved merged FITS: {output_path}")
+    print(f"  Merge summary for '{object_name}': {len(used_files)} frame(s) combined")
 
     return output_path
 
@@ -311,8 +334,10 @@ def group_files_by_object(filepaths: List[str]) -> Dict[str, List[str]]:
     """Group files by normalized object name from primary headers."""
 
     grouped: Dict[str, List[str]] = {}
+    total = len(filepaths)
+    print(f"Scanning headers for {total} candidate file(s)...")
 
-    for filepath in filepaths:
+    for idx, filepath in enumerate(filepaths, start=1):
         try:
             header = fits.getheader(filepath, 0)
         except Exception as exc:
@@ -326,6 +351,17 @@ def group_files_by_object(filepaths: List[str]) -> Dict[str, List[str]]:
 
         key = normalize_object_name(object_name)
         grouped.setdefault(key, []).append(filepath)
+
+        if idx <= 5:
+            print(
+                f"  Header {idx}/{total}: {os.path.basename(filepath)} -> "
+                f"OBJECT='{object_name}'"
+            )
+
+        if idx == 1 or idx == total or idx % 100 == 0:
+            print(f"  Parsed {idx}/{total} headers")
+
+    print(f"Header scan done. Found {len(grouped)} unique object name(s).")
 
     return grouped
 
@@ -382,7 +418,8 @@ def main() -> None:
             "or pass --output."
         )
 
-    out_base = os.path.expanduser(out_base)
+    # Normalize path so trailing separators do not turn '_merged' into a subfolder.
+    out_base = os.path.normpath(os.path.expanduser(out_base))
     output_folder_merged = f"{out_base}_merged"
 
     filepaths = get_fits_candidates(base=out_base, wildcard=args.scan_pattern)
@@ -391,6 +428,11 @@ def main() -> None:
             f"No candidate FITS files found in output folder '{out_base}' "
             f"with pattern '{args.scan_pattern}'."
         )
+
+    print(
+        f"Discovered {len(filepaths)} candidate file(s) in '{out_base}' "
+        f"with pattern '{args.scan_pattern}'"
+    )
 
     grouped = group_files_by_object(filepaths)
 
@@ -408,6 +450,8 @@ def main() -> None:
         key = normalize_object_name(obj)
         selected = grouped.get(key, [])
         print(f"Object '{obj}': {len(selected)} matching files")
+        if selected:
+            print(f"  First match: {os.path.basename(selected[0])}")
 
         if not selected:
             continue
