@@ -223,6 +223,22 @@ def integer_shift_with_nan_padding(image: np.ndarray, dy: int, dx: int) -> np.nd
     return out
 
 
+def subtract_xy_median_pattern(image: np.ndarray) -> np.ndarray:
+    """Remove vertical/horizontal striping using median profiles in x and y."""
+
+    out = np.asarray(image, dtype=float).copy()
+
+    # Subtract vertical pattern: one median value per column.
+    col_profile = np.nanmedian(out, axis=0)
+    out -= col_profile[np.newaxis, :]
+
+    # Subtract horizontal pattern: one median value per row.
+    row_profile = np.nanmedian(out, axis=1)
+    out -= row_profile[:, np.newaxis]
+
+    return out
+
+
 def make_merged_product(
     object_name: str,
     selected_files: List[str],
@@ -301,7 +317,9 @@ def make_merged_product(
 
     median_guiding = np.nanmedian(registered_guiding_cube, axis=0)
     median_residual = np.nanmedian(registered_residual_cube, axis=0)
+    median_residual = subtract_xy_median_pattern(median_residual)
     print(f"  Median stack done: {n_frames} frames, image shape {shape_ref}")
+    print("  Applied x/y median-profile subtraction to merged RESIDUAL")
 
     os.makedirs(output_folder_merged, exist_ok=True)
     object_tag = "_".join(object_name.strip().split())
