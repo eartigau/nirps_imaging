@@ -31,14 +31,33 @@ import glob
 import os
 
 from astropy.io import fits
-import yaml
-import getpass
 import fnmatch
+import getpass
+import yaml
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
 
 # ---------------------------------------------------------------------------
 # Configuration loading (mirrors get_props_guiding.py logic)
 # ---------------------------------------------------------------------------
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'guiding_config.yaml')
+
+
+def iter_with_progress(items, description):
+    """Yield items with a progress bar when tqdm is available."""
+
+    if tqdm is not None:
+        yield from tqdm(items, desc=description, unit='file')
+        return
+
+    total = len(items)
+    for index, item in enumerate(items, start=1):
+        print(f"{description}: {index}/{total}", end='\r', flush=True)
+        yield item
+    print(' ' * 80, end='\r')
 
 
 def load_folders(config_path=_CONFIG_PATH):
@@ -97,7 +116,7 @@ def main():
                    'peakflar', 'anglflar', 'xcen', 'ycen']
 
     rows = []
-    for fpath in files:
+    for fpath in iter_with_progress(files, 'Reading FITS headers'):
         try:
             hdr = fits.getheader(fpath, 0)
         except Exception as e:
