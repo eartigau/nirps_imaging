@@ -99,3 +99,73 @@ user:
   #   output_folder: '/Users/eartigau/data/nirps_outputs'
   #
   # Lookup order: exact username > first matching wildcard > default
+
+# --- Throughput merge configuration ---
+# This section predicts the extracted e2dsff spectrum associated with each
+# guiding-analysis product, optionally computes throughput metrics for any
+# missing cache entries, and merges the resulting columns into guiding_log.csv.
+throughput:
+  enabled: true
+
+  # Filename/path mapping from a guiding-analysis product to the extracted
+  # APERO spectrum. Example:
+  #   raw      : .../raw-data/nirps_he/2024-03-05/NIRPS_2024-03-06T05_46_04_845.fits
+  #   extracted: .../apero-data/nirps_he_online/red/2024-03-05/NIRPS_2024-03-06T05_46_04_845_pp_e2dsff_A.fits
+  guiding_suffix: '_guiding_analysis.fits'
+  raw_suffix: '.fits'
+  extracted_suffix: '_pp_e2dsff_A.fits'
+  # Night folder is inferred from the filename timestamp shifted backward by
+  # this many hours before formatting YYYY-MM-DD.
+  night_folder_offset_hours: 12
+
+  # Throughput algorithm settings copied from nirps_throughput/config.yaml.
+  band_min_nm: 1170.0
+  band_max_nm: 1330.0
+  band_label: 'J'
+  blaze_percentile: 50
+  jmag_keyword: 'HIERARCH ESO OCS TARG JMAG'
+  date_obs_keyword: 'DATE-OBS'
+  mjd_obs_keyword: 'MJD-OBS'
+  exptime_keyword: 'EXPTIME'
+  object_keyword: 'DRSOBJN'
+  airmass_keyword: 'HIERARCH ESO TEL AIRM START'
+  spec_extension: 'EXT_E2DS_FF'
+  blaze_extension: 'FF_BLAZE'
+  wave_extension: 'WAVE_NIGHT'
+
+  # These columns are copied from the throughput cache into guiding_log.csv.
+  merge_columns:
+    - date_obs
+    - mjd_obs
+    - jmag
+    - exptime
+    - airmass
+    - median_flux_e
+    - flux_per_sec
+    - throughput_proxy
+    - n_orders_used
+    - zero_point
+
+  user:
+    default:
+      extracted_root: '/cosmos99/nirps/apero-data/nirps_he_online/red/'
+      wave_file: '/cosmos99/nirps/apero-data/nirps_he_online/calib/NIRPS_2023-06-22T16_26_34_369_pp_e2dsff_A_wave_night_A.fits'
+      blaze_file: '/cosmos99/nirps/apero-data/nirps_he_online/calib/FC3F6C4131_pp_blaze_A.fits'
+      # Local cache used by this repository for incremental throughput merges.
+      results_csv: ''
+      # Optional existing throughput cache to bootstrap from.
+      bootstrap_results_csv: ''
+
+    nirps-client:
+      extracted_root: '/cosmos99/nirps/apero-data/nirps_he_online/red/'
+      wave_file: '/cosmos99/nirps/apero-data/nirps_he_online/calib/NIRPS_2023-06-22T16_26_34_369_pp_e2dsff_A_wave_night_A.fits'
+      blaze_file: '/cosmos99/nirps/apero-data/nirps_he_online/calib/FC3F6C4131_pp_blaze_A.fits'
+      results_csv: '/data/spirou/guiding_boxes/throughput_results.csv'
+      bootstrap_results_csv: ''
+
+    eartigau:
+      extracted_root: '/cosmos99/nirps/apero-data/nirps_he_online/red/'
+      wave_file: '/Users/eartigau/GitHubProjects/nirps_throughput/data/NIRPS_2023-06-22T16_26_34_369_pp_e2dsff_A_wave_night_A.fits'
+      blaze_file: '/Users/eartigau/GitHubProjects/nirps_throughput/data/FC3F6C4131_pp_blaze_A.fits'
+      results_csv: '/Users/eartigau/GitHubProjects/nirps_imaging/outputs/throughput_results.csv'
+      bootstrap_results_csv: '/Users/eartigau/GitHubProjects/nirps_throughput/output/throughput_results.csv'
