@@ -462,6 +462,12 @@ def build_throughput_cache(extracted_candidates, throughput_cfg):
     return merged_cache
 
 
+def print_extracted_summary(found_count, total_count):
+    """Print a short summary of extracted-spectrum availability."""
+
+    print(f"Extracted spectra found for {found_count}/{total_count} guiding files")
+
+
 def main():
     """Create the guiding log and merge any available throughput information."""
 
@@ -479,6 +485,7 @@ def main():
     rows = []
     extracted_candidates = {}
     throughput_cfg = config['throughput']
+    extracted_found_count = 0
 
     for filepath in iter_with_progress(guiding_files, 'Reading FITS headers'):
         try:
@@ -504,8 +511,12 @@ def main():
         row['_throughput_filename'] = extracted_filename or ''
         if extracted_filename:
             extracted_candidates.setdefault(extracted_filename, extracted_path)
+            if extracted_path and os.path.exists(extracted_path):
+                extracted_found_count += 1
 
         rows.append(row)
+
+    print_extracted_summary(extracted_found_count, len(rows))
 
     throughput_cache = build_throughput_cache(extracted_candidates, throughput_cfg)
     throughput_columns = [column for column in throughput_cfg.get('merge_columns', []) if column not in BASE_COLUMNS]
